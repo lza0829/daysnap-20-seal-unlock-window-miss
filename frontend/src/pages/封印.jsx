@@ -4,6 +4,7 @@ import { api } from "../api.js";
 export default function 封印() {
   const [日, set日] = useState("2026-11-22");
   const [原因, set原因] = useState("");
+  const [票号, set票号] = useState("");
   const [核, set核] = useState(null);
   const [影子, set影子] = useState([]);
   const [封印行, set封印行] = useState([]);
@@ -45,20 +46,27 @@ export default function 封印() {
     set忙(true);
     set讯("");
     try {
-      const r = await api.迟到补抽(日, [
-        {
-          流水号: `流-迟到-${Date.now()}`,
-          账户键: "户甲",
-          营业日: 日,
-          发生时: `${日}T23:59:00Z`,
-          变动额: 500,
-          摘要: "封印后迟到补抽",
-        },
-      ]);
+      const r = await api.迟到补抽(
+        日,
+        [
+          {
+            流水号: `流-迟到-${Date.now()}`,
+            账户键: "户甲",
+            营业日: 日,
+            发生时: `${日}T23:59:00Z`,
+            变动额: 500,
+            摘要: "封印后迟到补抽",
+          },
+        ],
+        "",
+        票号.trim()
+      );
       set讯(
-        `迟到补抽完成：封印=${r.抽取.封印} 正式拒改=${r.抽取.封印拒改} 影子 ${
-          r.抽取.影子写入 + r.抽取.影子覆盖
-        } 行`
+        票号.trim()
+          ? `持票补抽完成：正式镜不动，纠偏写入/覆盖 ${r.抽取.纠偏写入 + r.抽取.纠偏覆盖} 行（票号 ${r.票号}）`
+          : `迟到补抽完成（无票走影子轨）：正式拒改 ${r.抽取.封印拒改}，影子 ${
+              r.抽取.影子写入 + r.抽取.影子覆盖
+            } 行`
       );
       await 刷新();
     } catch (e) {
@@ -72,11 +80,12 @@ export default function 封印() {
     <div>
       <h1 className="题">快照封印</h1>
       <p className="述">
-        封印后正式有效镜冻结在封印指纹上；再抽/迟到补抽只落影子快照（非有效）。影子仅本页可读，永不自动升正式；解封须填原因并留痕。
+        封印后正式有效镜冻结在封印指纹上；再抽/迟到补抽只落影子快照（非有效）。解封窗票（口径乙）只开待发布纠偏簿、正式永冻，须另办发布解封才并入正式；无票迟到补抽两端皆拒。解封须填原因并留痕。
       </p>
       <div className="行">
         <input value={日} onChange={(e) => set日(e.target.value)} placeholder="YYYY-MM-DD" />
         <input value={原因} onChange={(e) => set原因(e.target.value)} placeholder="封印/解封原因（解封必填）" />
+        <input value={票号} onChange={(e) => set票号(e.target.value)} placeholder="迟到补抽窗票票号（空=无票将被拒）" />
         <button disabled={忙} onClick={() => 执行("封印")}>执行封印</button>
         <button className="次" disabled={忙} onClick={() => 执行("解封")}>解封手续</button>
         <button className="水" disabled={忙} onClick={迟到}>迟到补抽样例</button>
@@ -103,6 +112,8 @@ export default function 封印() {
                 </td>
               </tr>
               <tr><th>影子有无</th><td>{核.影子有无 ? `有（${核.影子行数} 行）` : "无"}</td></tr>
+              <tr><th>窗票</th><td>{核.窗票数 ? `共 ${核.窗票数} 张，当前有效 ${核.有效窗数} 张` : "无"}</td></tr>
+              <tr><th>待发布纠偏</th><td>{核.纠偏簿有无 ? `有（${核.待发布纠偏行数} 行，见解封窗票页）` : "无"}</td></tr>
               <tr><th>封印时刻</th><td>{核.封印时刻 || "—"}</td></tr>
               <tr><th>解封原因</th><td>{核.解封原因 || "—"}</td></tr>
             </tbody>

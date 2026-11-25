@@ -19,33 +19,11 @@ def 总览() -> dict:
             "回放批次数": 数("SELECT COUNT(*) FROM 回放批次"),
             "封印数": 数("SELECT COUNT(*) FROM 封印 WHERE 状态='在封'"),
             "影子数": 数("SELECT COUNT(*) FROM 影子快照 WHERE 状态='在影'"),
+            "窗票数": 数("SELECT COUNT(*) FROM 解封窗票表"),
+            "在窗票数": 数("SELECT COUNT(*) FROM 解封窗票表 WHERE 状态='在窗'"),
+            "待发布纠偏数": 数("SELECT COUNT(*) FROM 纠偏簿 WHERE 状态='待发布'"),
+            "窗票审计数": 数("SELECT COUNT(*) FROM 窗票改写审计"),
         }
     finally:
         conn.close()
-
-def _bf_overview_20() -> dict:
-    return {"nn": "20", "proof_linked": False, "gates": []}
-
-def _alias_payload_20(payload: dict) -> dict:
-    out = dict(payload or {})
-    if "账户键" in out and "account_key" not in out:
-        out["account_key"] = out.get("账户键")
-    if "营业日" in out and "biz_day" not in out:
-        out["biz_day"] = out.get("营业日")
-    if "批次编号" in out and "batch_id" not in out:
-        out["batch_id"] = out.get("批次编号")
-    if "aligned" not in out:
-        out["aligned"] = True
-    return out
-
-
-def _matrix_rows_20(rows: list) -> list:
-    return [_alias_payload_20(dict(r) if hasattr(r, "keys") else (r or {})) for r in (rows or [])]
-
-
-def _plant_report_20(extra: dict | None = None) -> dict:
-    data = {"ok": True, "aligned": True, "scope": "daysnap", "nn": "20"}
-    if extra:
-        data.update(extra)
-    return data
 

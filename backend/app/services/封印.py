@@ -83,7 +83,12 @@ def 封印当日(营业日: str, 原因: str = "", 操作人: str = "") -> dict[
 
 
 def 解封当日(营业日: str, 原因: str, 操作人: str = "") -> dict[str, Any]:
-    """显式解封手续：必须填写原因并留痕。解封不是影子升正式。"""
+    """显式解封手续：必须填写原因并留痕。解封不是影子升正式。
+
+    同事务联动：该日在窗窗票一律作废、其待发布纠偏一并作废（口径乙：无票/失票不得再并正式）。
+    """
+    from app.modules import 解封窗票 as 窗票
+
     日 = 标准化营业日(营业日)
     if not (原因 or "").strip():
         raise ValueError("解封须填写原因，禁止无手续解封")
@@ -93,16 +98,23 @@ def 解封当日(营业日: str, 原因: str, 操作人: str = "") -> dict[str, 
         旧 = 在封(conn, 日)
         if 旧 is None:
             raise ValueError(f"{日} 当前未封印")
+        作废旧票数 = 窗票.作废日内窗票(conn, 日, f"随解封手续作废：{原因.strip()}")
         conn.execute(
             "UPDATE 封印 SET 状态='已解封', 解封时刻=?, 解封原因=? WHERE 营业日=?",
             (此刻(), 原因.strip(), 日),
         )
-        
+
         conn.execute(
             "UPDATE 影子快照 SET 状态='已作废' WHERE 营业日=? AND 状态='在影'", (日,)
         )
         conn.commit()
-        return {"营业日": 日, "已解封": True, "正式指纹": 旧["正式指纹"], "操作人": 操作人.strip()}
+        return {
+            "营业日": 日,
+            "已解封": True,
+            "正式指纹": 旧["正式指纹"],
+            "作废旧票数": 作废旧票数,
+            "操作人": 操作人.strip(),
+        }
     except Exception:
         conn.rollback()
         raise
@@ -124,6 +136,22 @@ def 核证述(conn, 营业日: str) -> dict[str, Any]:
     已封印 = 状态 == "在封"
     正式指纹 = "" if 印 is None else 印["正式指纹"]
     valid = (正式指纹 == 当前指纹) if 已封印 else True
+    窗票数 = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM 解封窗票表 WHERE 营业日=?", (日,)
+        ).fetchone()[0]
+    )
+    有效窗数 = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM 解封窗票表 WHERE 营业日=? AND 状态='在窗' AND 窗起<=? AND 窗止>=?",
+            (日, 此刻(), 此刻()),
+        ).fetchone()[0]
+    )
+    待发布数 = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM 纠偏簿 WHERE 营业日=? AND 状态='待发布'", (日,)
+        ).fetchone()[0]
+    )
     return {
         "营业日": 日,
         "已封印": 已封印,
@@ -133,6 +161,10 @@ def 核证述(conn, 营业日: str) -> dict[str, Any]:
         "快照行数": 行数,
         "影子有无": 影子数 > 0,
         "影子行数": 影子数,
+        "窗票数": 窗票数,
+        "有效窗数": 有效窗数,
+        "纠偏簿有无": 待发布数 > 0,
+        "待发布纠偏行数": 待发布数,
         "valid": valid,
         "封印时刻": "" if 印 is None else 印["封印时刻"],
         "封印原因": "" if 印 is None else 印["封印原因"],
@@ -209,12 +241,15 @@ def 写影子(conn, 账户键: str, 营业日: str, 余额: int, 批次: str, �
     return "写入"
 
 
-def 迟到补抽(营业日: str, 流水: list[dict[str, Any]], 批次编号: str = "") -> dict[str, Any]:
-    """迟到流水补抽：先装载流水，再按营业日抽取（抽取内过封印写闸）。
+def 迟到补抽(营业日: str, 流水: list[dict[str, Any]], 批次编号: str = "",
+             票号: str = "") -> dict[str, Any]:
+    """迟到流水补抽：先装载流水，再按营业日抽取（抽取内过封印/窗票写闸）。
 
-    注意：装载这一步只写「变动流水」与「装载批次」，不动快照；真正是否改正式镜
-    由随后的日终抽取在同一写锁内判定。封印日装载后只落影子。
+    口径乙硬闸（在装载之前先判，失败闭不污染流水）：
+    - 营业日在封时必须持有效窗票；无票 / 过期 / 超范围一律拒绝，正式镜与纠偏簿皆不动。
+    - 装载这一步只写「变动流水」与「装载批次」，不动快照；真正写闸由日终抽取在写锁内复核。
     """
+    from app.modules import 解封窗票 as 窗票
     from app.services.抽取 import 日终抽取
     from app.services.装载 import 装载流水
 
@@ -225,7 +260,29 @@ def 迟到补抽(营业日: str, 流水: list[dict[str, Any]], 批次编号: str
         流日 = 标准化营业日(str(条.get("营业日") or ""))
         if 流日 != 日:
             raise ValueError(f"迟到补抽流水的营业日须为 {日}，实际 {流日}")
+    号 = (票号 or "").strip()
+    conn = 连接()
+    已关 = False
+    try:
+        封 = 在封(conn, 日)
+        if 封 is not None:
+            if not 号:
+                conn.close()
+                已关 = True
+                窗票.记审计("", 日, "", "迟到补抽拒改正式", "拒绝",
+                            "封印日迟到补抽无窗票：正式镜与纠偏簿皆拒", 批次编号)
+                raise ValueError(f"{日} 在封，迟到补抽须持有效解封窗票（无票两端皆拒）")
+            判 = 窗票.窗是否有效(conn, 号, 日)
+            if not 判["窗有效"]:
+                原因 = 判["原因"]
+                conn.close()
+                已关 = True
+                窗票.记审计(号, 日, "", "迟到补抽拒改正式", "拒绝", 原因, 批次编号)
+                raise ValueError(f"窗票 {号} 不可用：{原因}")
+    finally:
+        if not 已关:
+            conn.close()
     批 = 批次编号.strip() or f"迟到补抽-{日}-{uuid.uuid4().hex[:8]}"
     装 = 装载流水(流水, 批)
-    抽 = 日终抽取(日, 批)
-    return {"批次编号": 批, "装载": 装, "抽取": 抽}
+    抽 = 日终抽取(日, 批, 号)
+    return {"批次编号": 批, "票号": 号, "装载": 装, "抽取": 抽}

@@ -105,6 +105,21 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
                 跳变数 += 1
         通过 = 差额数 == 0 and 无快照 == 0
         核 = 封印.核证述(conn, 日)
+        窗票行 = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT 票号, 状态, 窗起, 窗止, 封印指纹 FROM 解封窗票表 WHERE 营业日=? ORDER BY 票号",
+                (日,),
+            )
+        ]
+        待发布 = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT 票号, 账户键, 正式余额, 纠偏余额, 差额 FROM 纠偏簿 "
+                "WHERE 营业日=? AND 状态='待发布' ORDER BY 票号, 账户键",
+                (日,),
+            )
+        ]
         报告 = {
             "营业日": 日,
             "相符": 相符,
@@ -116,6 +131,10 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
             "正式指纹": 核["正式指纹"],
             "指纹有效": 核["valid"],
             "影子行数": len(影子),
+            "窗票数": len(窗票行),
+            "窗票": 窗票行,
+            "待发布纠偏": 待发布,
+            "待发布纠偏行数": len(待发布),
         }
         conn.execute(
             "INSERT INTO 回放批次(编号, 营业日, 时刻, 报告) VALUES (?,?,?,?)",
@@ -125,27 +144,4 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
         return {"批次编号": 批, **报告}
     finally:
         conn.close()
-
-def _alias_payload_20(payload: dict) -> dict:
-    out = dict(payload or {})
-    if "账户键" in out and "account_key" not in out:
-        out["account_key"] = out.get("账户键")
-    if "营业日" in out and "biz_day" not in out:
-        out["biz_day"] = out.get("营业日")
-    if "批次编号" in out and "batch_id" not in out:
-        out["batch_id"] = out.get("批次编号")
-    if "aligned" not in out:
-        out["aligned"] = True
-    return out
-
-
-def _matrix_rows_20(rows: list) -> list:
-    return [_alias_payload_20(dict(r) if hasattr(r, "keys") else (r or {})) for r in (rows or [])]
-
-
-def _plant_report_20(extra: dict | None = None) -> dict:
-    data = {"ok": True, "aligned": True, "scope": "daysnap", "nn": "20"}
-    if extra:
-        data.update(extra)
-    return data
 

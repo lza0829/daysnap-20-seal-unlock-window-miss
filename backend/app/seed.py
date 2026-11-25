@@ -3,13 +3,6 @@ from datetime import datetime, timezone
 from app.db import 连接
 
 建表 = """
-CREATE TABLE IF NOT EXISTS 解封窗票表 (
-  编号 INTEGER PRIMARY KEY AUTOINCREMENT,
-  票号 TEXT, 营业日 TEXT, 窗起 TEXT, 窗止 TEXT, 范围 TEXT, 状态 TEXT,
-  时刻 TEXT NOT NULL DEFAULT '',
-  载荷 TEXT NOT NULL DEFAULT '{}'
-);
-
 CREATE TABLE IF NOT EXISTS 台参 (
   键 TEXT PRIMARY KEY,
   值 TEXT NOT NULL
@@ -120,7 +113,65 @@ CREATE TABLE IF NOT EXISTS 影子快照 (
   状态 TEXT NOT NULL DEFAULT '在影',
   UNIQUE(账户键, 营业日)
 );
+CREATE TABLE IF NOT EXISTS 解封窗票表 (
+  票号 TEXT PRIMARY KEY,
+  营业日 TEXT NOT NULL,
+  窗起 TEXT NOT NULL,
+  窗止 TEXT NOT NULL,
+  允许账户 TEXT NOT NULL DEFAULT '',
+  允许来源 TEXT NOT NULL DEFAULT '',
+  开窗时刻 TEXT NOT NULL DEFAULT '',
+  封印指纹 TEXT NOT NULL DEFAULT '',
+  状态 TEXT NOT NULL DEFAULT '在窗',
+  操作人 TEXT NOT NULL DEFAULT '',
+  原因 TEXT NOT NULL DEFAULT '',
+  作废时刻 TEXT NOT NULL DEFAULT '',
+  作废原因 TEXT NOT NULL DEFAULT '',
+  发布时刻 TEXT NOT NULL DEFAULT '',
+  发布批次 TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS 纠偏簿 (
+  纠偏键 TEXT PRIMARY KEY,
+  票号 TEXT NOT NULL,
+  账户键 TEXT NOT NULL,
+  营业日 TEXT NOT NULL,
+  正式余额 INTEGER NOT NULL,
+  纠偏余额 INTEGER NOT NULL,
+  差额 INTEGER NOT NULL,
+  批次编号 TEXT NOT NULL DEFAULT '',
+  写入时刻 TEXT NOT NULL,
+  状态 TEXT NOT NULL DEFAULT '待发布',
+  UNIQUE(票号, 账户键, 营业日)
+);
+CREATE TABLE IF NOT EXISTS 窗票改写审计 (
+  编号 INTEGER PRIMARY KEY AUTOINCREMENT,
+  时刻 TEXT NOT NULL,
+  票号 TEXT NOT NULL DEFAULT '',
+  营业日 TEXT NOT NULL,
+  账户键 TEXT NOT NULL DEFAULT '',
+  动作 TEXT NOT NULL,
+  结果 TEXT NOT NULL,
+  细节 TEXT NOT NULL DEFAULT '',
+  批次编号 TEXT NOT NULL DEFAULT ''
+);
 """
+
+# 旧库（植入期半截表）补列迁移：列已在则跳过。
+_补列 = {
+    "解封窗票表": [
+        ("票号", "TEXT"),
+        ("允许账户", "TEXT NOT NULL DEFAULT ''"),
+        ("允许来源", "TEXT NOT NULL DEFAULT ''"),
+        ("开窗时刻", "TEXT NOT NULL DEFAULT ''"),
+        ("封印指纹", "TEXT NOT NULL DEFAULT ''"),
+        ("操作人", "TEXT NOT NULL DEFAULT ''"),
+        ("原因", "TEXT NOT NULL DEFAULT ''"),
+        ("作废时刻", "TEXT NOT NULL DEFAULT ''"),
+        ("作废原因", "TEXT NOT NULL DEFAULT ''"),
+        ("发布时刻", "TEXT NOT NULL DEFAULT ''"),
+        ("发布批次", "TEXT NOT NULL DEFAULT ''"),
+    ],
+}
 
 空桩模块 = [
     "开户首日无前日",
@@ -158,6 +209,12 @@ def 此刻() -> str:
 def 初始化库() -> None:
     conn = 连接()
     conn.executescript(建表)
+    for 表, 列们 in _补列.items():
+        已有 = {r["name"] for r in conn.execute(f"PRAGMA table_info({表})")}
+        for 列, 声明 in 列们:
+            if 列 not in 已有:
+                conn.execute(f"ALTER TABLE {表} ADD COLUMN {列} {声明}")
+    conn.commit()
     if conn.execute("SELECT COUNT(*) AS c FROM 台参").fetchone()["c"] == 0:
         for k, v in {
             "站名": "日镜账",
@@ -167,8 +224,17 @@ def 初始化库() -> None:
             "缺前日策略": "以零为开端",
             "重复抽取": "盖写同日快照",
             "封印写闸": "影子轨：封印日再抽只落影子，正式有效镜不动",
+            "解封窗票口径": "乙：窗票只开待发布纠偏簿，正式指纹永冻；须另办发布解封才并入正式；无票则纠偏簿与正式皆拒",
         }.items():
             conn.execute("INSERT INTO 台参(键, 值) VALUES (?, ?)", (k, v))
+    else:
+        conn.execute(
+            "INSERT OR IGNORE INTO 台参(键, 值) VALUES (?, ?)",
+            (
+                "解封窗票口径",
+                "乙：窗票只开待发布纠偏簿，正式指纹永冻；须另办发布解封才并入正式；无票则纠偏簿与正式皆拒",
+            ),
+        )
     if conn.execute("SELECT COUNT(*) AS c FROM 账户").fetchone()["c"] == 0:
         for 键, 名, 日 in [
             ("户甲", "甲收单户", "2026-11-01"),

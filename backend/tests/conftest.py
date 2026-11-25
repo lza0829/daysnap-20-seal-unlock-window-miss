@@ -12,12 +12,14 @@ os.environ["夹具目录"] = str(Path(__file__).resolve().parents[2] / "fixtures
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import seed  
-from app.db import 连接  
+from app import seed
+from app.db import 连接
+from app.services import 时间
 
 
 @pytest.fixture(autouse=True)
 def 干净库():
+    时间.复位钟()
     seed.初始化库()
     conn = 连接()
     try:
@@ -33,9 +35,13 @@ def 干净库():
             "装载批次",
             "封印",
             "影子快照",
+            "窗票改写审计",
+            "纠偏簿",
+            "解封窗票表",
         ):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
     finally:
         conn.close()
     yield
+    时间.复位钟()

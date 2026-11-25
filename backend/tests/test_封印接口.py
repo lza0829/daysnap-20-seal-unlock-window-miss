@@ -62,7 +62,7 @@ def test_封印入口_核证_影子只读_AND_正式不变(客户):
     assert all(x["来源"] == "封印后再抽" for x in 影子)
 
 
-def test_迟到补抽接口_封印后不改正式(客户):
+def test_迟到补抽接口_封印后无票400_持票不改正式(客户):
     _铺三日(客户)
     客户.post("/api/封印", json={"营业日": "2026-11-22"})
     原快照 = 客户.get("/api/快照", params={"营业日": "2026-11-22"}).json()
@@ -75,10 +75,32 @@ def test_迟到补抽接口_封印后不改正式(客户):
             ],
         },
     )
-    assert r.status_code == 200
-    assert r.json()["抽取"]["封印"] is True
+    assert r.status_code == 400, "封印日无窗票迟到补抽两端皆拒"
+    assert 客户.get("/api/窗票/纠偏簿", params={"营业日": "2026-11-22"}).json() == []
+
+    w = 客户.post(
+        "/api/窗票/开窗",
+        json={"营业日": "2026-11-22", "窗止": "2099-01-01T00:00:00Z", "票号": "票-api-1"},
+    )
+    assert w.status_code == 200 and w.json()["窗是否有效"] is True
+    r2 = 客户.post(
+        "/api/迟到补抽",
+        json={
+            "营业日": "2026-11-22",
+            "票号": "票-api-1",
+            "流水": [
+                {"流水号": "补-2", "账户键": "户甲", "营业日": "2026-11-22", "变动额": 250, "摘要": "迟到"}
+            ],
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["抽取"]["封印"] is True
     assert 客户.get("/api/快照", params={"营业日": "2026-11-22"}).json() == 原快照
-    assert 客户.get("/api/封印核证", params={"营业日": "2026-11-22"}).json()["valid"] is True
+    核 = 客户.get("/api/封印核证", params={"营业日": "2026-11-22"}).json()
+    assert 核["valid"] is True and 核["纠偏簿有无"] is True
+    簿 = 客户.get("/api/窗票/纠偏簿", params={"票号": "票-api-1"}).json()
+    甲行 = next(r for r in 簿 if r["账户键"] == "户甲")
+    assert len(簿) == 3 and 甲行["纠偏余额"] == 甲行["正式余额"] + 250
 
 
 def test_无原因解封_400(客户):

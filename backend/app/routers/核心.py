@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 from app.db import 夹具目录, 连接
 from app.services import 回放, 抽取, 封印, 目录, 装载
+from app.services import 时间
+from app.modules import 解封窗票 as 窗票
 
 路由 = APIRouter(prefix="/api")
 
@@ -16,6 +18,7 @@ class 装载请求(BaseModel):
 class 营业日请求(BaseModel):
     营业日: str
     批次编号: str = ""
+    票号: str = ""
 
 
 class 封印请求(BaseModel):
@@ -33,7 +36,25 @@ class 解封请求(BaseModel):
 class 迟到补抽请求(BaseModel):
     营业日: str
     批次编号: str = ""
+    票号: str = ""
     流水: list = Field(default_factory=list)
+
+
+class 开窗请求(BaseModel):
+    营业日: str
+    窗止: str
+    窗起: str = ""
+    允许账户: list[str] = Field(default_factory=list)
+    允许来源: str = ""
+    票号: str = ""
+    原因: str = ""
+    操作人: str = ""
+
+
+class 发布请求(BaseModel):
+    票号: str
+    原因: str
+    操作人: str = ""
 
 
 @路由.get("/健康")
@@ -219,7 +240,7 @@ def _装载夹具文件(名: str):
 @路由.post("/抽取")
 def 执行抽取(体: 营业日请求):
     try:
-        return 抽取.日终抽取(体.营业日, 体.批次编号)
+        return 抽取.日终抽取(体.营业日, 体.批次编号, 体.票号)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -277,9 +298,71 @@ def 列影子(营业日: str = "", 账户键: str = "", 含作废: bool = False)
 @路由.post("/迟到补抽")
 def 执行迟到补抽(体: 迟到补抽请求):
     try:
-        return 封印.迟到补抽(体.营业日, 体.流水, 体.批次编号)
+        return 封印.迟到补抽(体.营业日, 体.流水, 体.批次编号, 体.票号)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@路由.post("/窗票/开窗")
+def 执行开窗(体: 开窗请求):
+    """解封入口①：同票开窗票（营业日、窗起止、允许改写范围、票号）。"""
+    try:
+        return 窗票.开窗(
+            体.营业日, 体.窗止, 体.窗起, 体.允许账户, 体.允许来源,
+            体.票号, 体.原因, 体.操作人,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.post("/窗票/发布")
+def 执行窗票发布(体: 发布请求):
+    """解封入口②：发布解封——待发布纠偏并入正式镜，封印指纹随之重算（口径乙唯一并正式路径）。"""
+    try:
+        return 窗票.发布(体.票号, 体.原因, 体.操作人)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.get("/窗票/核证")
+def 取窗票核证(票号: str = "", 营业日: str = ""):
+    """解封窗票核证只读接口：票号、窗是否有效、正式指纹、纠偏簿有无、valid。"""
+    try:
+        return 窗票.核证(票号, 营业日)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.get("/窗票/纠偏簿")
+def 取纠偏簿(营业日: str = "", 票号: str = "", 含发布: bool = True):
+    """纠偏簿只读出口：正式主读 /快照 永远不含纠偏值。"""
+    try:
+        return 窗票.列纠偏(营业日, 票号, 含发布)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.get("/窗票/审计")
+def 取窗票审计(票号: str = "", 营业日: str = ""):
+    try:
+        return 窗票.列审计(票号, 营业日)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.post("/时钟/拨")
+def 拨钟(payload: dict):
+    """夹具用：把时钟拨到指定 ISO 时刻（过期窗测试）。"""
+    try:
+        return {"当前时刻": 时间.拨钟(str(payload.get("时刻") or ""))}
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@路由.post("/时钟/复位")
+def 复位钟():
+    时间.复位钟()
+    return {"当前时刻": 时间.此刻()}
 
 
 @路由.post("/重置业务库")
@@ -299,6 +382,9 @@ def 重置():
             "装载批次",
             "封印",
             "影子快照",
+            "窗票改写审计",
+            "纠偏簿",
+            "解封窗票表",
         ):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
@@ -306,42 +392,18 @@ def 重置():
     finally:
         conn.close()
 
-from app.modules import 解封窗票 as _bf_mod_20
 
-
+# 基线兼容别名：/核证/解封窗票 即窗票核证只读接口。
 @路由.get("/核证/解封窗票")
-def 取核证_20(键: str | None = None):
+def 取核证_别名(键: str | None = None, 营业日: str = ""):
     conn = 连接()
     try:
-        return _bf_mod_20.查现场(conn, 键)
+        return 窗票.查现场(conn, 键, 营业日)
     finally:
         conn.close()
 
 
 @路由.post("/核证/解封窗票/巡检")
-def 巡检核证_20(payload: dict | None = None):
-    return _bf_mod_20.巡检包(payload or {})
-
-def _alias_payload_20(payload: dict) -> dict:
-    out = dict(payload or {})
-    if "账户键" in out and "account_key" not in out:
-        out["account_key"] = out.get("账户键")
-    if "营业日" in out and "biz_day" not in out:
-        out["biz_day"] = out.get("营业日")
-    if "批次编号" in out and "batch_id" not in out:
-        out["batch_id"] = out.get("批次编号")
-    if "aligned" not in out:
-        out["aligned"] = True
-    return out
-
-
-def _matrix_rows_20(rows: list) -> list:
-    return [_alias_payload_20(dict(r) if hasattr(r, "keys") else (r or {})) for r in (rows or [])]
-
-
-def _plant_report_20(extra: dict | None = None) -> dict:
-    data = {"ok": True, "aligned": True, "scope": "daysnap", "nn": "20"}
-    if extra:
-        data.update(extra)
-    return data
+def 巡检核证(payload: dict | None = None):
+    return 窗票.巡检包(payload or {})
 

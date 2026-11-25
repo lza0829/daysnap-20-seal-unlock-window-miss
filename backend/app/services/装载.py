@@ -10,8 +10,6 @@ def 装载流水(事件: list[dict[str, Any]], 批次编号: str = "") -> dict:
     """装载账户变动流水。金额单位：分。"""
     if not 事件:
         raise ValueError("流水列表为空")
-    from app.modules import 解封窗票 as _win
-    _ = _win.过期窗仍放行(None, "")
     批 = 批次编号.strip() or f"装载-{uuid.uuid4().hex[:10]}"
     conn = 连接()
     入账 = 0
@@ -70,27 +68,4 @@ def 装载流水(事件: list[dict[str, Any]], 批次编号: str = "") -> dict:
         return {"批次编号": 批, **报告}
     finally:
         conn.close()
-
-def _alias_payload_20(payload: dict) -> dict:
-    out = dict(payload or {})
-    if "账户键" in out and "account_key" not in out:
-        out["account_key"] = out.get("账户键")
-    if "营业日" in out and "biz_day" not in out:
-        out["biz_day"] = out.get("营业日")
-    if "批次编号" in out and "batch_id" not in out:
-        out["batch_id"] = out.get("批次编号")
-    if "aligned" not in out:
-        out["aligned"] = True
-    return out
-
-
-def _matrix_rows_20(rows: list) -> list:
-    return [_alias_payload_20(dict(r) if hasattr(r, "keys") else (r or {})) for r in (rows or [])]
-
-
-def _plant_report_20(extra: dict | None = None) -> dict:
-    data = {"ok": True, "aligned": True, "scope": "daysnap", "nn": "20"}
-    if extra:
-        data.update(extra)
-    return data
 
